@@ -1,0 +1,7 @@
+{
+    "url": 0,
+    "Arduino": false,
+    "Arduino_Port": "COM4",
+    "AC_Pin": 8,
+    "Light_Pins": []
+}
