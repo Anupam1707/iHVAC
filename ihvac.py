@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import time
+from datetime import datetime
 from pathlib import Path
 
 import cv2
@@ -21,6 +22,37 @@ GRID_COLUMNS = 8
 GRID_ROWS = 6
 GRID_TILT_DEGREES = 30.0
 LIGHT_SETTLE_SECONDS = 10.0
+
+DEFAULT_COMFORT_PROFILES = {
+    "Balanced": {
+        "ac_on_at": 1,
+        "busy_at": 5,
+        "empty_temperature": 26,
+        "occupied_temperature": 23,
+        "busy_temperature": 21,
+    },
+    "Focus": {
+        "ac_on_at": 1,
+        "busy_at": 6,
+        "empty_temperature": 26,
+        "occupied_temperature": 24,
+        "busy_temperature": 22,
+    },
+    "Meeting": {
+        "ac_on_at": 1,
+        "busy_at": 5,
+        "empty_temperature": 26,
+        "occupied_temperature": 22,
+        "busy_temperature": 20,
+    },
+    "Eco": {
+        "ac_on_at": 2,
+        "busy_at": 6,
+        "empty_temperature": 27,
+        "occupied_temperature": 25,
+        "busy_temperature": 23,
+    },
+}
 
 
 def parse_arguments():
@@ -82,8 +114,27 @@ def read_config():
     config_path = Path("config.json")
     if not config_path.exists():
         return {}
-    with config_path.open("r") as file:
-        return json.load(file)
+    try:
+        with config_path.open("r") as file:
+            data = json.load(file)
+    except (OSError, json.JSONDecodeError):
+        logger.warning("Unable to read config.json; keeping the last valid settings")
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def grid_settings(config):
+    try:
+        columns = max(1, min(12, int(config.get("Grid_Columns", GRID_COLUMNS))))
+        rows = max(1, min(12, int(config.get("Grid_Rows", GRID_ROWS))))
+        if rows * columns > 48:
+            rows, columns = GRID_ROWS, GRID_COLUMNS
+        tilt = float(config.get("Grid_Tilt_Degrees", GRID_TILT_DEGREES))
+        if not 1 <= tilt <= 89:
+            tilt = GRID_TILT_DEGREES
+    except (TypeError, ValueError):
+        return GRID_COLUMNS, GRID_ROWS, GRID_TILT_DEGREES
+    return columns, rows, tilt
 
 
 def normalize_source(source):
@@ -135,14 +186,23 @@ def light_key(row, column):
 
 
 class GridLightController:
-    def __init__(self, board, light_pins, settle_seconds=LIGHT_SETTLE_SECONDS):
+    def __init__(
+        self,
+        board,
+        light_pins,
+        settle_seconds=LIGHT_SETTLE_SECONDS,
+        columns=GRID_COLUMNS,
+        rows=GRID_ROWS,
+    ):
         self.board = board
         self.light_pins = list(light_pins or [])
         self.settle_seconds = settle_seconds
+        self.columns = int(columns)
+        self.rows = int(rows)
         self.states = {
             light_key(row, column): False
-            for row in range(GRID_ROWS)
-            for column in range(GRID_COLUMNS)
+            for row in range(self.rows)
+            for column in range(self.columns)
         }
         self.pending = {}
 
@@ -150,8 +210,8 @@ class GridLightController:
         now = time.monotonic() if now is None else now
         desired = {
             light_key(row, column): (row, column) in occupied_cells
-            for row in range(GRID_ROWS)
-            for column in range(GRID_COLUMNS)
+            for row in range(self.rows)
+            for column in range(self.columns)
         }
         for key, desired_state in desired.items():
             if desired_state == self.states[key]:
@@ -169,7 +229,7 @@ class GridLightController:
             self.pending.pop(key, None)
             row = int(key[1:key.index("c")]) - 1
             column = int(key[key.index("c") + 1:]) - 1
-            index = row * GRID_COLUMNS + column
+            index = row * self.columns + column
             pin = self.light_pins[index] if index < len(self.light_pins) else None
             write_pin(self.board, pin, desired_state)
         return dict(self.states)
@@ -181,12 +241,30 @@ class GridLightController:
             write_pin(self.board, pin, False)
 
 
-def ac_settings(occupancy):
-    if occupancy <= 0:
-        return False, 26
-    if occupancy >= 5:
-        return True, 21
-    return True, 23
+def ac_settings(occupancy, config=None):
+    config = config or {}
+    profiles = config.get("Comfort_Profiles", {})
+    profile_name = config.get("Active_Profile", "Balanced")
+    profile = profiles.get(profile_name, DEFAULT_COMFORT_PROFILES["Balanced"])
+    try:
+        ac_on_at = max(1, int(profile.get("ac_on_at", 1)))
+        busy_at = max(ac_on_at, int(profile.get("busy_at", 5)))
+        empty_temperature = int(profile.get("empty_temperature", 26))
+        occupied_temperature = int(profile.get("occupied_temperature", 23))
+        busy_temperature = int(profile.get("busy_temperature", 21))
+    except (TypeError, ValueError):
+        profile = DEFAULT_COMFORT_PROFILES["Balanced"]
+        ac_on_at = profile["ac_on_at"]
+        busy_at = profile["busy_at"]
+        empty_temperature = profile["empty_temperature"]
+        occupied_temperature = profile["occupied_temperature"]
+        busy_temperature = profile["busy_temperature"]
+
+    if occupancy < ac_on_at:
+        return False, empty_temperature, profile_name
+    if occupancy >= busy_at:
+        return True, busy_temperature, profile_name
+    return True, occupied_temperature, profile_name
 
 
 def tracked_people(model, frame, args):
@@ -201,15 +279,23 @@ def tracked_people(model, frame, args):
     )[0]
 
     if result.boxes is None:
-        return []
+        return [], None
 
     boxes = result.boxes.xyxy.cpu().numpy().astype("int")
+    confidence_values = []
+    if result.boxes.conf is not None:
+        confidence_values = result.boxes.conf.cpu().numpy().tolist()
     people = []
     for start_x, start_y, end_x, end_y in boxes:
         center_x = int((start_x + end_x) / 2.0)
         center_y = int((start_y + end_y) / 2.0)
         people.append(((start_x, start_y, end_x, end_y), (center_x, center_y)))
-    return people
+    average_confidence = (
+        sum(confidence_values) / len(confidence_values)
+        if confidence_values
+        else None
+    )
+    return people, average_confidence
 
 
 def highlight_people(frame, people):
@@ -228,30 +314,111 @@ def main():
         save_interval_seconds=args.save_interval_minutes * 60,
     )
     board = maybe_connect_arduino(config)
-    ac_pin = config.get("AC_Pin")
-    light_controller = GridLightController(board, config.get("Light_Pins", []))
-    room_grid = PerspectiveRoomGrid(
-        columns=GRID_COLUMNS,
-        rows=GRID_ROWS,
-        downward_tilt_degrees=GRID_TILT_DEGREES,
+    controller_status = "connected" if board is not None else (
+        "offline" if config.get("Arduino", False) else "not_configured"
     )
-    model = YOLO(args.model)
-    capture = open_video_source(args, config)
+    ac_pin = config.get("AC_Pin")
+    grid_columns, grid_rows, grid_tilt = grid_settings(config)
+    light_controller = GridLightController(
+        board,
+        config.get("Light_Pins", []),
+        columns=grid_columns,
+        rows=grid_rows,
+    )
+    light_controller.switch_off()
+    room_grid = PerspectiveRoomGrid(
+        columns=grid_columns,
+        rows=grid_rows,
+        downward_tilt_degrees=grid_tilt,
+    )
+    store.set_runtime_status(
+        camera_status="starting",
+        controller_status=controller_status,
+        recording_enabled=bool(args.output),
+        grid_rows=grid_rows,
+        grid_columns=grid_columns,
+        force=True,
+    )
+    try:
+        model = YOLO(args.model)
+        capture = open_video_source(args, config)
+    except Exception:
+        store.set_runtime_status(camera_status="offline", force=True)
+        raise
     writer = None
+    config_path = Path("config.json")
+    try:
+        config_mtime = config_path.stat().st_mtime
+    except OSError:
+        config_mtime = 0
+    last_config_check = 0
 
     try:
         while True:
+            now = time.monotonic()
+            if now - last_config_check >= 1.0:
+                last_config_check = now
+                try:
+                    next_mtime = config_path.stat().st_mtime
+                except OSError:
+                    next_mtime = config_mtime
+                if next_mtime != config_mtime:
+                    next_config = read_config()
+                    if not next_config:
+                        next_config = config
+                    old_geometry = grid_settings(config)
+                    new_geometry = grid_settings(next_config)
+                    pins_changed = next_config.get("Light_Pins", []) != config.get("Light_Pins", [])
+                    if old_geometry != new_geometry or pins_changed:
+                        light_controller.switch_off()
+                        grid_columns, grid_rows, grid_tilt = new_geometry
+                        light_controller = GridLightController(
+                            board,
+                            next_config.get("Light_Pins", []),
+                            columns=grid_columns,
+                            rows=grid_rows,
+                        )
+                        light_controller.switch_off()
+                        room_grid = PerspectiveRoomGrid(
+                            columns=grid_columns,
+                            rows=grid_rows,
+                            downward_tilt_degrees=grid_tilt,
+                        )
+                        store.set_runtime_status(
+                            grid_rows=grid_rows,
+                            grid_columns=grid_columns,
+                        )
+                    config = next_config
+                    ac_pin = config.get("AC_Pin")
+                    config_mtime = next_mtime
+
             ok, frame = capture.read()
             if not ok:
+                store.set_runtime_status(camera_status="offline", force=True)
                 break
 
-            people = tracked_people(model, frame, args)
+            people, average_confidence = tracked_people(model, frame, args)
             store.set_visible_count(len(people))
             occupied_cells = room_grid.occupied_cells(people, frame.shape)
             light_states = light_controller.update(occupied_cells)
-            ac_enabled, ac_temperature = ac_settings(store.snapshot.current_occupancy)
+            ac_enabled, ac_temperature, profile_name = ac_settings(
+                store.snapshot.current_occupancy,
+                config,
+            )
             write_pin(board, ac_pin, ac_enabled)
-            store.set_device_status(light_states, ac_enabled, ac_temperature)
+            store.set_device_status(light_states, ac_enabled, ac_temperature, profile_name)
+            store.set_room_activity(
+                [light_key(row, column) for row, column in occupied_cells],
+                average_confidence,
+            )
+            store.set_runtime_status(
+                camera_status="online",
+                camera_last_frame_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                controller_status=controller_status,
+                recording_enabled=bool(args.output),
+                grid_rows=grid_rows,
+                grid_columns=grid_columns,
+            )
             if not args.no_grid:
                 room_grid.draw(frame, occupied_cells)
             highlight_people(frame, people)
@@ -274,6 +441,7 @@ def main():
     finally:
         light_controller.switch_off()
         write_pin(board, ac_pin, False)
+        store.set_runtime_status(camera_status="offline", force=True)
         capture.release()
         if writer is not None:
             writer.release()

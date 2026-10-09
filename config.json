@@ -3,5 +3,40 @@
     "Arduino": false,
     "Arduino_Port": "COM4",
     "AC_Pin": 8,
-    "Light_Pins": []
+    "Light_Pins": [],
+    "Room_Name": "My Room",
+    "Grid_Columns": 8,
+    "Grid_Rows": 6,
+    "Grid_Tilt_Degrees": 30,
+    "Active_Profile": "Balanced",
+    "Comfort_Profiles": {
+        "Balanced": {
+            "ac_on_at": 1,
+            "busy_at": 5,
+            "empty_temperature": 26,
+            "occupied_temperature": 23,
+            "busy_temperature": 21
+        },
+        "Focus": {
+            "ac_on_at": 1,
+            "busy_at": 6,
+            "empty_temperature": 26,
+            "occupied_temperature": 24,
+            "busy_temperature": 22
+        },
+        "Meeting": {
+            "ac_on_at": 1,
+            "busy_at": 5,
+            "empty_temperature": 26,
+            "occupied_temperature": 22,
+            "busy_temperature": 20
+        },
+        "Eco": {
+            "ac_on_at": 2,
+            "busy_at": 6,
+            "empty_temperature": 27,
+            "occupied_temperature": 25,
+            "busy_temperature": 23
+        }
+    }
 }
