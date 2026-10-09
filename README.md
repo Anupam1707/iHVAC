@@ -115,3 +115,10 @@ Set `Arduino` to `true` only when the controller is connected. `AC_Pin` is the o
 ## Data
 
 `data/occupancy_state.json` stores the latest occupancy, occupied zones, light states, AC settings, camera/controller health, and detector confidence. `data/logs/occupancy_events.csv` stores occupancy readings every 30 minutes by default. `data/logs/room_history.csv` stores time-stamped zone snapshots for replay. The dashboard reads optional environmental readings from `data/environmental_state.json` when a sensor integration supplies them.
+
+
+## Creators
+
+Anupam Kanoongo (F044, 70022400311)
+Arjun Borkar (F005, 70022400057)
+Asmit Baldi (F042, 70022400309)
