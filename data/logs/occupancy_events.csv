@@ -1343,3 +1343,4 @@ timestamp,event,track_id,current_occupancy,entries_today,exits_today
 2026-09-20 15:31:02,visible_reading,0
 2026-09-20 15:31:48,visible_reading,0
 2026-09-20 15:37:42,visible_reading,0
+2026-10-09 15:39:59,visible_reading,camera,2,,
